@@ -2,6 +2,13 @@
 # # 共通処理
 
 # %%
+# ReadMe
+README = 'Common Library for PyTorch\nAuthor: H. Hiroshi\nVer:1.0.1'
+
+# %% [markdown]
+# ## ライブラリ
+
+# %%
 # 必要ライブラリのインポート
 
 import numpy as np
@@ -20,6 +27,7 @@ from torchviz import make_dot
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
 
 # %% [markdown]
 # ## 損失計算
@@ -59,11 +67,27 @@ def eval_loss(loader, device, net, criterion):
     return loss
 
 # %% [markdown]
+# ## モデルを保存する
+
+# %%
+import datetime
+import os
+
+def SaveModel(model, save_path, file_name_pram=None):
+    now = datetime.datetime.now()
+    # 学習済みの重みパラメータを保存する
+    if file_name_pram is not None:
+        save_path = os.path.join(save_path, now.strftime("%Y%m%d%H%M%S")  + '_' + file_name_pram + '.pth')
+    else:
+        save_path = os.path.join(save_path, now.strftime("%Y%m%d%H%M%S") + '.pth')
+    torch.save(model, save_path)
+
+# %% [markdown]
 # ## 学習処理
 
 # %%
 # 学習用関数
-def fit(net, optimizer, criterion, num_epochs, train_loader, test_loader, device, history):
+def fit(net, optimizer, criterion, num_epochs, train_loader, test_loader, device, history, scheduler = None, save_better_only=False, save_path=None):
     """
     学習処理を実施する。
     
@@ -77,6 +101,9 @@ def fit(net, optimizer, criterion, num_epochs, train_loader, test_loader, device
     test_loader  : 検証用のデータローダー
     device  : 処理デバイス
     history  : 学習結果（繰り返し数、訓練損失、訓練精度、検証損失、検証精度）
+    scheduler  : スケジューラー
+    save_better_only  : Trueの場合、損失率が最小の場合、保存する
+    save_path  : モデルを保存するパス
 
     Returns
     -------
@@ -159,6 +186,10 @@ def fit(net, optimizer, criterion, num_epochs, train_loader, test_loader, device
             val_loss +=  loss_test.item() * test_batch_size
             n_val_acc +=  (predicted_test == labels_test).sum().item()
 
+        if scheduler != None:
+            # スケジューラを更新する
+            scheduler.step()
+        
         # 精度計算
         train_acc = n_train_acc / n_train
         val_acc = n_val_acc / n_test
@@ -169,7 +200,16 @@ def fit(net, optimizer, criterion, num_epochs, train_loader, test_loader, device
         print (f'Epoch [{(epoch+1)}/{num_epochs+base_epochs}], loss: {avg_train_loss:.5f} acc: {train_acc:.5f} val_loss: {avg_val_loss:.5f}, val_acc: {val_acc:.5f}')
         # 記録
         item = np.array([epoch+1, avg_train_loss, train_acc, avg_val_loss, val_acc])
+
+        # モデルを保存する
+        if save_path is not None:
+            if save_better_only and epoch > 1 and history[:, 3].min() < avg_val_loss:
+                pass
+            else:
+                SaveModel(net, save_path, 'epoch{}_valloss{:.5f}_valacc{:.5f}'.format(epoch+1, avg_val_loss, val_acc))
+
         history = np.vstack((history, item))
+
     return history
 
 # %% [markdown]
@@ -248,7 +288,6 @@ def show_images_labels(loader, classes, net, device):
       # 予測計算
       outputs = net(inputs)
       predicted = torch.max(outputs,1)[1]
-      #images = images.to('cpu')
 
     # 最初のn_size個の表示
     plt.figure(figsize=(20, 15))
@@ -283,12 +322,68 @@ def show_images_labels(loader, classes, net, device):
 # ## 乱数初期化
 
 # %%
-# PyTorch乱数固定用
-
 def torch_seed(seed=123):
+    """
+    PyTorch乱数固定用
+    """
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.use_deterministic_algorithms = True
+
+# %% [markdown]
+# ## モデルを使用して画像を分類する
+
+# %%
+def ImageRec(model, input_image, classes, device):
+    """
+    モデルを使用して画像を分類する。
+    
+    Parameters
+    ----------
+    model  : モデルインスタンス
+    input_image  : 判定画像
+    classes  : 分類
+    device  : 処理デバイス
+    """
+    
+    # 前処理の定義
+    preprocess = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor()
+    ])
+
+    # 前処理を行う
+    input_tensor = preprocess(input_image)
+    input_tensor = input_tensor.unsqueeze(0)
+    model = model.to(device)
+    input_tensor = input_tensor.to(device)
+    input_tensor_normalize = transforms.Normalize(0.5, 0.5)(input_tensor)
+
+    # 推論を行う
+    model.eval()
+    with torch.no_grad():
+        output = model(input_tensor_normalize)
+
+    # クラス分類結果を取得
+    predicted = F.softmax(output[0], dim=0)
+
+    # 結果を表示する
+    top5_probs, top5_idxs = torch.topk(predicted, 3)
+
+    for i in range(3):
+        print(f'{classes[top5_idxs[i]]}: {top5_probs[i]:.2%}')
+    
+    os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+    input_tensor = input_tensor.to('cpu')
+
+    # 結果表示
+    image = transforms.ToPILImage()(input_tensor[0])
+
+    _, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(image)
+    ax.axis('off')
+    plt.show()
 
 
